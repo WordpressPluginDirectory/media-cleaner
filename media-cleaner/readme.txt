@@ -5,7 +5,7 @@ Donate link: https://meowapps.com/donation/
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 6.6.9
+Stable tag: 6.7.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -47,9 +47,13 @@ This plugin is compatible with all media types, including retina and WebP versio
 
 == Changelog ==
 
+= 6.7.0 (2024/01/13) =
+* Add: New 'check-live' argument for WP-CLI.
+* Add: Import and Export of the settings.
+* Info: We are working hard on Media Cleaner. If you want to share some love, write a simple and nice review [here](https://wordpress.org/support/plugin/media-cleaner/reviews/?rate=5#new-post). Thank you so much! 💖
+
 = 6.6.9 (2023/12/05) =
 * Add: Expert Mode for advanced users.
-* Info: We are working hard on Media Cleaner. If you want to share some love, write a simple and nice review [here](https://wordpress.org/support/plugin/media-cleaner/reviews/?rate=5#new-post). Thank you so much! 💖
 
 = 6.6.8 (2023/11/18) =
 * Add: Support for ACF File Field based on IDs.
