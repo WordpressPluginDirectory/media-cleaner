@@ -517,6 +517,7 @@ class Meow_WPMC_Core {
 	function log( $data = null, $force = false ) {
 		if ( !$this->debug_logs && !$force )
 			return;
+		error_log( $data );
 		$this->logs_directory_check();
 		$fh = @fopen( WPMC_PATH . '/logs/media-cleaner.log', 'a' );
 		if ( !$fh )
@@ -542,6 +543,23 @@ class Meow_WPMC_Core {
 
 	function get_trashurl() {
 		return trailingslashit( $this->upload_url ) . 'wpmc-trash';
+	}
+
+	function clean_ob(){
+		$disabled = $this->get_option( 'output_buffer_cleaning_disabled' );
+		$ob_content = ob_get_contents();
+		if ( !empty( trim( $ob_content ) ) ) {
+
+			if ( $disabled ) {
+				$this->log( "🚨 If the server's response was broken, try to let Output Buffer Cleaning enabled." );
+				return;
+			}
+
+			$this->log( "🧹 The response is broken due to output buffering, it will be cleaned." );
+			$this->log( "📄 Output buffer content: " . $ob_content );
+
+			ob_end_clean();
+		}
 	}
 
 	/**
@@ -706,6 +724,7 @@ class Meow_WPMC_Core {
 			'post_content'   => '',
 			'post_status'    => 'inherit'
 		);
+
 		$attach_id = wp_insert_attachment( $attachment, $full_path );
 
 		require_once( ABSPATH . 'wp-admin/includes/image.php' );
@@ -1557,6 +1576,7 @@ class Meow_WPMC_Core {
 			'file_op_buffer' => 20,
 			'delay' => 100,
 			'shortcodes_disabled' => false,
+			'output_buffer_cleaning_disabled' => false,
 			'posts_per_page' => 10,
 			'clean_uninstall' => false,
 			'repair_mode' => false,

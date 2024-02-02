@@ -265,6 +265,8 @@ class Meow_WPMC_Rest
 			], 200 );
 		}
 
+		$this->core->clean_ob();
+
 		return new WP_REST_Response( [ 
 			'success' => true, 
 			'message' => $message,
@@ -304,6 +306,9 @@ class Meow_WPMC_Rest
 		$results = $this->engine->get_media_entries( $limit, $limitsize, $unattachedOnly );
 		$finished = count( $results ) < $limitsize;
 		$message = sprintf( __( "Retrieved %d targets.", 'media-cleaner' ), count( $results ) );
+
+		$this->core->clean_ob();
+
 		return new WP_REST_Response( [ 
 			'success' => true, 
 			'message' => $message,
