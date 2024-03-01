@@ -377,14 +377,19 @@ class Meow_WPMC_Rest
 
 	function refresh_logs() {
 		$data = "No data.";
-		if ( file_exists( WPMC_PATH . '/logs/media-cleaner.log' ) ) {
-			$data = file_get_contents( WPMC_PATH . '/logs/media-cleaner.log' );
+
+		$log_file = $this->core->get_logs_path();
+
+		if ( file_exists( $log_file ) ) {
+			$data = file_get_contents( $log_file );
 		}
+
 		return new WP_REST_Response( [ 'success' => true, 'data' => $data ], 200 );
 	}
 
 	function clear_logs() {
-		unlink( WPMC_PATH . '/logs/media-cleaner.log' );
+		$log_file = $this->core->get_logs_path();
+		unlink( $log_file );
 		return new WP_REST_Response( [ 'success' => true ], 200 );
 	}
 

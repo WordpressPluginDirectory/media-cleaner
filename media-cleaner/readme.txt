@@ -5,7 +5,7 @@ Donate link: https://meowapps.com/donation/
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 6.7.2
+Stable tag: 6.7.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -47,6 +47,11 @@ This plugin is compatible with all media types, including retina and WebP versio
 
 == Changelog ==
 
+= 6.7.3 (2024/03/01) =
+* Update: Better translations.
+* Update: Safer logs system.
+* Info: We are working hard on Media Cleaner. If you want to share some love, write a simple and nice review [here](https://wordpress.org/support/plugin/media-cleaner/reviews/?rate=5#new-post). Thank you so much! 💖
+
 = 6.7.2 (2024/02/02) =
 * Add: "Create Batch" feature for Filesystem scans, streamlining the scanning process.
 * Add: "Delete Permanently" option in trash tab for targeted item management.
@@ -54,7 +59,6 @@ This plugin is compatible with all media types, including retina and WebP versio
 * Fix: Option to disable OB Cleaning.
 * Fix: Corrected dashboard media link functionality for subdirectories.
 * Fix: Resolved issues with backslash replacement on multiple occurrences for more accurate processing.
-* Info: We are working hard on Media Cleaner. If you want to share some love, write a simple and nice review [here](https://wordpress.org/support/plugin/media-cleaner/reviews/?rate=5#new-post). Thank you so much! 💖
 
 = 6.7.0 (2024/01/13) =
 * Add: New 'check-live' argument for WP-CLI.

@@ -517,18 +517,52 @@ class Meow_WPMC_Core {
 	function log( $data = null, $force = false ) {
 		if ( !$this->debug_logs && !$force )
 			return;
-		error_log( $data );
-		$this->logs_directory_check();
-		$fh = @fopen( WPMC_PATH . '/logs/media-cleaner.log', 'a' );
-		if ( !$fh )
-			return false;
-		$date = current_datetime()->format( 'Y-m-d H:i:s' );
-		if ( is_null( $data ) )
+
+		$php_logs = $this->get_option( 'php_error_logs' );
+		$log_file_path = $this->get_logs_path();
+
+		$fh = @fopen( $log_file_path, 'a' );
+		if ( !$fh ) { return false; }
+		$date = date( "Y-m-d H:i:s" );
+		if ( is_null( $data ) ) {
 			fwrite( $fh, "\n" );
-		else
+		}
+		else {
 			fwrite( $fh, "$date: {$data}\n" );
+			if ( $php_logs ) {
+				error_log( "[MEDIA CLEANER] " . $data );
+			}
+		}
 		fclose( $fh );
 		return true;
+	}
+
+	function get_logs_path() {
+		$path = $this->get_option( 'logs_path' );
+		if ( $path && file_exists( $path ) ) {
+			return $path;
+		}
+		$uploads_dir = wp_upload_dir();
+		$path = trailingslashit( $uploads_dir['basedir'] ) . WPMC_PREFIX . "_" . $this->random_ascii_chars() . ".log";
+		if ( !file_exists( $path ) ) {
+			touch( $path );
+		}
+		$options = $this->get_all_options();
+		$options['logs_path'] = $path;
+		$this->update_options( $options );
+		return $path;
+	}
+
+	private function random_ascii_chars( $length = 8 ) {
+		$characters = array_merge( range( 'A', 'Z' ), range( 'a', 'z' ), range( '0', '9' ) );
+		$characters_length = count( $characters );
+		$random_string = '';
+
+		for ($i = 0; $i < $length; $i++) {
+			$random_string .= $characters[rand(0, $characters_length - 1)];
+		}
+
+		return $random_string;
 	}
 
 	/**
@@ -1577,10 +1611,12 @@ class Meow_WPMC_Core {
 			'delay' => 100,
 			'shortcodes_disabled' => false,
 			'output_buffer_cleaning_disabled' => false,
+			'php_error_logs' => false,
 			'posts_per_page' => 10,
 			'clean_uninstall' => false,
 			'repair_mode' => false,
 			'expert_mode' => false,
+			'logs_path' => null,
 		);
 	}
 
