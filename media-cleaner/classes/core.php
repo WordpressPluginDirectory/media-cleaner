@@ -508,11 +508,7 @@ class Meow_WPMC_Core {
 		}
 	}
 
-	function logs_directory_check() {
-		if ( !file_exists( WPMC_PATH . '/logs/' ) ) {
-			mkdir( WPMC_PATH . '/logs/', 0777 );
-		}
-	}
+	#region LOGS
 
 	function log( $data = null, $force = false ) {
 		if ( !$this->debug_logs && !$force )
@@ -537,25 +533,76 @@ class Meow_WPMC_Core {
 		return true;
 	}
 
+	//WPMC_PREFIX
+
 	function get_logs_path() {
-		$path = $this->get_option( 'logs_path' );
-		if ( $path && file_exists( $path ) ) {
-			return $path;
-		}
 		$uploads_dir = wp_upload_dir();
-		$path = trailingslashit( $uploads_dir['basedir'] ) . WPMC_PREFIX . "_" . $this->random_ascii_chars() . ".log";
-		if ( !file_exists( $path ) ) {
-			touch( $path );
+		$uploads_dir_path = trailingslashit( $uploads_dir['basedir'] );
+
+		$path = $this->get_option( 'logs_path' );
+
+		if ( $path && file_exists( $path ) ) {
+			// make sure the path is legal (within the uploads directory with the WPMC_PREFIX prefix and log extension)
+			if ( strpos( $path, $uploads_dir_path ) !== 0 || strpos( $path, WPMC_PREFIX ) === false || substr( $path, -4 ) !== '.log' ) {
+				$path = null;
+			} else {
+				return $path;
+			}
 		}
-		$options = $this->get_all_options();
-		$options['logs_path'] = $path;
-		$this->update_options( $options );
+
+		if ( !$path ) {
+			$path = $uploads_dir_path . WPMC_PREFIX . "_" . $this->random_ascii_chars() . ".log";
+			if ( !file_exists( $path ) ) {
+				touch( $path );
+			}
+			
+			$options = $this->get_all_options();
+			$options['logs_path'] = $path;
+			$this->update_options( $options );
+		}
+
 		return $path;
 	}
+	
 
-	private function random_ascii_chars( $length = 8 ) {
-		$characters = array_merge( range( 'A', 'Z' ), range( 'a', 'z' ), range( '0', '9' ) );
-		$characters_length = count( $characters );
+	function get_logs() {
+		$log_file_path = $this->get_logs_path();
+
+		if ( !file_exists( $log_file_path ) ) {
+			return "No logs found.";
+		}
+
+		$content = file_get_contents( $log_file_path );
+		$lines = explode( "\n", $content );
+		$lines = array_filter( $lines );
+		$lines = array_reverse( $lines );
+		$content = implode( "\n", $lines );
+		return $content;
+	}
+
+	function clear_logs() {
+		$logPath = $this->get_logs_path();
+		if ( file_exists( $logPath ) ) {
+			unlink( $logPath );
+		}
+
+		$options = $this->get_all_options();
+		$options['logs_path'] = null;
+		$this->update_options( $options );
+	}
+
+	#endregion
+
+	/**
+	 *
+	 * HELPERS
+	 *
+	 */
+
+	private function random_ascii_chars($length = 8)
+	{
+		$characters = array_merge(range('A', 'Z'), range('a', 'z'), range('0', '9'));
+		$characters_length = count($characters);
 		$random_string = '';
 
 		for ($i = 0; $i < $length; $i++) {
@@ -564,12 +611,6 @@ class Meow_WPMC_Core {
 
 		return $random_string;
 	}
-
-	/**
-	 *
-	 * HELPERS
-	 *
-	 */
 
 	function get_trashdir() {
 		return trailingslashit( $this->upload_path ) . 'wpmc-trash';
