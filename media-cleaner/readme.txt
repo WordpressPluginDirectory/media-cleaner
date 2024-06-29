@@ -5,7 +5,7 @@ Donate link: https://meowapps.com/donation/
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 6.7.6
+Stable tag: 6.7.7
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -46,6 +46,11 @@ This plugin is compatible with all media types, including retina and WebP versio
 1. Media -> Media Cleaner
 
 == Changelog ==
+
+= 6.7.7 (2024/06/28) =
+* Fix: Warnings with ACF.
+* Fix: Base folder for the Filesystem Scan.
+* Update: Cleaned the UI a bit more.
 
 = 6.7.6 (2024/06/05) =
 * Update: Better References section.

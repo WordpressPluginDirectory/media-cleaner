@@ -327,7 +327,7 @@ class Meow_WPMC_Rest
 
 		//ob_start();
 		$data = $params['targets'];
-		$method = $this->core->current_method;
+		$method = $this->core->get_option( 'method' );
 
 		$this->core->timeout_check_start( count( $data ) );
 		$success = 0;
@@ -337,7 +337,7 @@ class Meow_WPMC_Rest
 		foreach ( $data as $piece ) {
 			$this->core->timeout_check();
 			if ( $method == 'files' ) {
-				$this->core->log( "🔎 Checking: {$piece}..." );
+				$this->core->log( "🔎 Checking File: {$piece}..." );
 				$result = ( $this->engine->check_file( $piece ) ? 1 : 0 );
 				if ( $result ) {
 					$success += $result;
@@ -347,7 +347,7 @@ class Meow_WPMC_Rest
 				// }
 			}
 			else if ( $method == 'media' ) {
-				$this->core->log( "🔎 Checking #{$piece}..." );
+				$this->core->log( "🔎 Checking Media #{$piece}..." );
 				$result = ( $this->engine->check_media( $piece ) ? 1 : 0 );
 				if ( $result ) {
 					$success += $result;
@@ -396,7 +396,17 @@ class Meow_WPMC_Rest
 	function rest_update_options( $request ) {
 		try {
 			$params = $request->get_json_params();
+
+			if ( count( $params['options']) == 1 ) {
+				$this->core->log( "Ensuring the scan method: " . key( $params['options'] ) . " to " . $params['options'][ key( $params['options'] ) ] );
+
+				$options = $this->core->get_all_options();
+				$options[ key( $params['options'] ) ] = $params['options'][ key( $params['options'] ) ];
+				$params['options'] = $options;
+			}
+
 			$value = $params['options'];
+
 			$options = $this->core->update_options( $value );
 			$success = !!$options;
 			$message = __( $success ? 'OK' : "Could not update options.", 'media-cleaner' );
@@ -844,13 +854,14 @@ class Meow_WPMC_Rest
 		}
 
 		$data = get_transient( $transientKey );
+		$data = null;
 		if ( !$data ) {
 			$data = $this->core->get_uploads_directory_hierarchy();
 			set_transient( $transientKey, $data );
 		}
 
 		$uploads_dir = wp_upload_dir();
-		$root = '/' . wp_basename( $uploads_dir['basedir'] );
+		$root = wp_normalize_path( '/' . wp_basename( $uploads_dir['basedir'] ) );
 
 		return new WP_REST_Response( [ 'success' => true, 'data' => [
 			'root' => $root,

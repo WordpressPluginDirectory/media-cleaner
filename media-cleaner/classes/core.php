@@ -1435,7 +1435,7 @@ class Meow_WPMC_Core {
 		$paths = array();
 		$fullpath = get_attached_file( $attachmentId );
 		if ( empty( $fullpath ) ) {
-			error_log( 'Media Cleaner: Could not find attached file for Media ID ' . $attachmentId );
+			$this->log( 'Could not find attached file for Media ID ' . $attachmentId );
 			return array();
 		}
 		$mainfile = $this->clean_uploaded_filename( $fullpath );
@@ -1593,23 +1593,26 @@ class Meow_WPMC_Core {
 
 	function get_uploads_directory_hierarchy() {
 		$uploads_dir = wp_upload_dir();
-		$base_dir = $uploads_dir['basedir'];
+		$base_dir = wp_normalize_path( $uploads_dir['basedir'] );
 		$root = '/' . wp_basename( $base_dir );
 		$directories = array();
-
+	
 		// Get all subdirectories of the base directory
-		$dir_iterator = new RecursiveDirectoryIterator( $base_dir, FilesystemIterator::KEY_AS_PATHNAME|FilesystemIterator::CURRENT_AS_FILEINFO|FilesystemIterator::SKIP_DOTS );
+		$dir_iterator = new RecursiveDirectoryIterator( $base_dir, FilesystemIterator::KEY_AS_PATHNAME | FilesystemIterator::CURRENT_AS_FILEINFO | FilesystemIterator::SKIP_DOTS );
 		$iterator = new RecursiveIteratorIterator( $dir_iterator, RecursiveIteratorIterator::SELF_FIRST );
+	
 		foreach ( $iterator as $file ) {
 			if ( $file->isDir() ) {
+				// Normalize path for consistency
+				$file_path = wp_normalize_path( $file->getPathname() );
 				// Remove base_dir from path
-				$directory = str_replace( $base_dir, '', $file->getPathname() );
+				$directory = str_replace( $base_dir, '', $file_path );
 				if ( $directory ) {
 					$directories[] = $root . $directory;
 				}
 			}
 		}
-
+	
 		// Return the hierarchy as a JSON file
 		return json_encode( $directories );
 	}
