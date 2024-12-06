@@ -162,15 +162,15 @@ class MeowApps_WPMC_Parser_Common {
 					}
 				}
 				else {
-					$exploded = explode( ',', $meta );
-					if ( is_array( $exploded ) ) {
+					$exploded = $meta !== null ? explode(',', $meta) : [];
+					if ( is_array( $exploded ) && count( $exploded ) > 0 ) {
 						$wpmc->array_to_ids_or_urls( $exploded, $postmeta_images_ids, $postmeta_images_urls );
 						continue;
 					}
 				}
 			}
-			$wpmc->add_reference_id( $postmeta_images_ids, 'META (ID)', $id );
-			$wpmc->add_reference_id( $postmeta_images_urls, 'META (URL)', $id );
+			$wpmc->add_reference_id( $postmeta_images_ids, 'POST META (ID)', $id );
+			$wpmc->add_reference_id( $postmeta_images_urls, 'POST META (URL)', $id );
 		}
 	}
 }
