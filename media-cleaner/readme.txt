@@ -5,7 +5,7 @@ Donate link: https://www.patreon.com/meowapps
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 6.8.5
+Stable tag: 6.8.7
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -48,6 +48,18 @@ This plugin is compatible with all media types, including retina and WebP versio
 1. Media -> Media Cleaner
 
 == Changelog ==
+
+= 6.8.7 (2025/03/12) =
+* Update: Improved type handling and updated the Divi parser for better compatibility.
+* Fix: Added a recursion limit to ACF field scanning functions to prevent infinite loops.
+
+= 6.8.6 (2025/02/17) =
+* Add: Added a SAFE tag to Foo Gallery full sizes to mark certain media as in use.
+* Update: Moved SAFE tag logic from JavaScript to PHP for better efficiency.
+* Fix: Corrected featured image thumbnails and improved SAFE tag detection.
+* Update: Improved UI by replacing the timer component with a countdown version.
+* Update: Added an error modal with auto-retry functionality for better user experience.
+* Update: Reworked compatibility for Avada builder.
 
 = 6.8.5 (2024/12/25) =
 * Fix: HTML needs to be well-decoded before being sent to DOMDocument.
