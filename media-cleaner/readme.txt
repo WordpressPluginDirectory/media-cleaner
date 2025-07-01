@@ -5,7 +5,7 @@ Donate link: https://www.patreon.com/meowapps
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 6.8.9
+Stable tag: 6.9.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -48,6 +48,22 @@ This plugin is compatible with all media types, including retina and WebP versio
 1. Media -> Media Cleaner
 
 == Changelog ==
+
+= 6.9.2 (2025/07/01) =
+* Add: Added support for Fluent Forms.
+* Fix: Fixed NekoTable display issues.
+* Update: Streamlined Divi parser for better image URL extraction and improved filesystem handling.
+* Update: Enhanced thumbnail URL extraction and added new function to retrieve attachment sizes.
+
+= 6.9.1 (2025/06/29) =
+* Add: Support for Kadence Blocks.
+* Add: Support for Salient Theme Elements.
+* Add: Support for Houzez Theme.
+* Add: Support for WooCommerce variation galleries.
+* Update: Improved Enfold parser with better handling of nested shortcodes and enhanced ID/URL extraction.
+
+= 6.9.0 (2025/05/11) =
+* Update: Removed unused code for live content checks in CLI commands to improve plugin performance and maintainability.
 
 = 6.8.9 (2025/05/04) =
 * Fix: Ensure the "Disable Shortcode Analysis" setting is now respected in all content parsers.
