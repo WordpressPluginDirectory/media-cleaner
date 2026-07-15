@@ -288,6 +288,11 @@ class Meow_WPMC_Support {
       array_push( $unsupported, 'WP Download Manager' );
     }
 
+    //WP Recipe Maker
+    if ( defined( 'WPRM_VERSION' ) || class_exists( 'WP_Recipe_Maker' ) ) {
+      array_push( $unsupported, 'WP Recipe Maker' );
+    }
+
     return $unsupported;
   }
 }
