@@ -1472,6 +1472,8 @@ class Meow_WPMC_Core {
 	}
 
 	function recover( $id, $operation_manifest = array() ) {
+		$staged = $this->results_staged_error();
+		if ( $staged ) return $staged;
 		global $wpdb;
 		$table_name = $wpdb->prefix . "mclean_scan";
 		$issue = $this->get_issue( $id );
@@ -1613,6 +1615,8 @@ class Meow_WPMC_Core {
 	}
 
 	function ignore( $id, $ignore ) {
+		$staged = $this->results_staged_error();
+		if ( $staged ) return $staged;
 		global $wpdb;
 		$table_name = $wpdb->prefix . "mclean_scan";
 		$issue = $this->get_issue( $id );
@@ -1833,6 +1837,20 @@ class Meow_WPMC_Core {
 		$skip_trash = $this->get_option( 'skip_trash' );
 		$was_deleted = isset( $operation_manifest['initial_deleted'] ) ? (bool) $operation_manifest['initial_deleted'] : $issue->deleted === 1;
 
+		$staged = $this->results_staged_error();
+		if ( $staged ) return $staged;
+
+		// Trashing something new is only as safe as the analysis behind it, so it needs
+		// results from a finished scan of this version. Emptying the trash does not:
+		// that file was already set aside on purpose, and refusing here would strand
+		// it. This is the one place deletion is allowed or refused, so the REST API,
+		// MCP and WP-CLI all get the same answer. The capability is checked by the
+		// callers, since WP-CLI has no current user.
+		if ( !$was_deleted && ( !$this->runs || !$this->runs->cleanup_allowed() ) ) {
+			return new WP_Error( 'wpmc_cleanup_needs_scan',
+				__( 'Media Cleaner needs the results of a completed scan from this version before it can delete anything. Run a scan first. Your trash is untouched and can still be recovered or emptied.', 'media-cleaner' ) );
+		}
+
 		if ( $issue->type === 0 ) {
 			if ( $was_deleted ) {
 				$trash_path = $this->resolve_trash_path( $issue->path );
@@ -1921,6 +1939,8 @@ class Meow_WPMC_Core {
 
 	function force_trash( $initialize = false, $limit = 100 ) {
 		global $wpdb;
+		$staged = $this->results_staged_error();
+		if ( $staged ) return $staged;
 		$run_id = $this->get_run_id();
 		$table_name = $wpdb->prefix . 'mclean_scan';
 		$tracked_items = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM $table_name WHERE run_id = %d AND deleted = 1", $run_id ) );
@@ -2179,16 +2199,23 @@ class Meow_WPMC_Core {
 	private function add_reference( $id, $url, $type, $origin = null, $extra = null ) {
 		$type = substr( sanitize_text_field( (string) $type ), 0, 191 );
 		if ( $origin !== null && !is_scalar( $origin ) ) $origin = wp_json_encode( $origin );
+		// The origin is only a label for where the reference was found. If malformed content
+		// makes it huge, trim it rather than dropping the reference: the reference marks a file
+		// as used, and losing it could let a used file be deleted.
 		if ( is_string( $origin ) && strlen( $origin ) > 8192 ) {
-			throw new RuntimeException( __( 'A media reference origin exceeds the safe 8 KB limit.', 'media-cleaner' ) );
-		}
-		if ( is_string( $url ) && strlen( $url ) > 4096 ) {
-			throw new RuntimeException( __( 'A media reference exceeds the safe 4 KB path limit.', 'media-cleaner' ) );
+			$origin = substr( $origin, 0, 8192 );
 		}
 		if ( !empty( $id ) ) {
 			$this->queue_reference( array( 'id' => $id, 'url' => null, 'type' => $type, 'origin' => $origin ) );
 		}
 		if ( !empty( $url ) ) {
+			// A real media path is never this large, so an oversized "URL" is a parser
+			// mis-extraction (a data: URI, a concatenated path blob, etc.). It can never match
+			// a real file, so skip it instead of aborting the whole scan — the same treatment
+			// the http/javascript URLs get just below. This is what stranded Divi users in 7.2.
+			if ( is_string( $url ) && strlen( $url ) > 4096 ) {
+				return;
+			}
 			// The URL shouldn't contain http, https, javascript at the beginning (and there are probably many more cases)
 			// The URL must be cleaned before being passed as a reference.
 			if ( substr( $url, 0, 5 ) === "http:" || substr( $url, 0, 6 ) === "https:" || substr( $url, 0, 11 ) === "javascript:" ) {
@@ -3096,6 +3123,9 @@ class Meow_WPMC_Core {
 		return apply_filters( 'wpmc_allow_setup', current_user_can( 'manage_options' ) );
 	}
 
+	// Cached per request: the mutators below can be called in batches of 100.
+	private $results_staged = null;
+
 	public function can_access_features() {
 		return apply_filters( 'wpmc_allow_usage', current_user_can( 'manage_options' ) );
 	}
@@ -3103,6 +3133,25 @@ class Meow_WPMC_Core {
 	public function can_cleanup() {
 		$allowed = current_user_can( 'manage_options' ) && $this->runs && $this->runs->cleanup_allowed();
 		return $allowed && apply_filters( 'wpmc_allow_cleanup', true );
+	}
+
+	/**
+	 * A staged scan copies the ignored and trashed results into itself when it starts,
+	 * and that copy replaces them when it publishes. Changing them in the meantime
+	 * would be silently undone, and a trashed row coming back after its file was
+	 * recovered would let the next Empty Trash erase a file that is in use.
+	 *
+	 * So the results hold still while a scan is staged over them. The scan is the
+	 * user's own, and publishing or cancelling it releases them.
+	 */
+	private function results_staged_error() {
+		if ( $this->results_staged === null ) {
+			$this->results_staged = $this->runs && $this->runs->get_resumable() ? true : false;
+		}
+		if ( !$this->results_staged ) return null;
+		return new WP_Error( 'wpmc_scan_staged',
+			__( 'A scan is staged over these results, so they cannot be changed yet. Publish it or cancel it first, then try again.', 'media-cleaner' ),
+			array( 'status' => 409 ) );
 	}
 
 	#region Options
