@@ -3,9 +3,9 @@ Contributors: TigrouMeow
 Tags: clean, media, files, images, library
 Donate link: https://www.patreon.com/meowapps
 Requires at least: 6.0
-Tested up to: 7.0
-Requires PHP: 7.4
-Stable tag: 7.2.5
+Tested up to: 7.1
+Requires PHP: 8.1
+Stable tag: 7.2.9
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -52,6 +52,43 @@ This plugin is compatible with all media types, including retina and WebP versio
 1. Media -> Media Cleaner
 
 == Changelog ==
+
+= 7.2.9 (2026/09/26) =
+* Add: Live Logs panel on the scan dashboard showing scan, trash and delete activity in real time.
+* Add: Detailed timing and error tracking for the deletion process.
+* Add: Log history linked to the support ID in the Support Bundles section.
+* Update: Multilingual references are now resolved in their own scan step instead of during the references extraction.
+* Update: Failed items during deletion are now grouped in a single summary instead of opening an error modal right away.
+* Update: The license screen now explains the exact reason a license check failed.
+* Fix: A server that cannot reach the license server no longer freezes the admin for minutes.
+* Fix: Temporary errors while processing a media file no longer cause an endless retry loop.
+* Fix: Attachment lookup for multilingual references is faster on large sites.
+* Fix: SiteOrigin Page Builder parser no longer registers the same reference several times.
+* Fix: Meta Box parser now collects term meta in the scan once step using the paged parser.
+
+= 7.2.8 (2026/09/14) =
+* Fix: Resolved a PHP warning that could appear during scans.
+* 🎵 Discuss with others about Media Cleaner on [the Discord](https://discord.gg/bHDGh38).
+* 🌴 Keep us motivated with [a little review here](https://wordpress.org/support/plugin/media-cleaner/reviews/). Thank you!
+* 🥰 If you want to help us, check our [Patreon](https://www.patreon.com/meowapps). Thank you!
+
+= 7.2.7 (2026/09/07) =
+* Add: "Inspect" button for duplicates to compare and resolve issues from a unified view.
+* Add: Unlock Scan maintenance tool.
+* Add: Soliloquy parser.
+* Fix: Duplicates scan skips unreadable files instead of stopping, and duplicates are no longer protected from checks.
+* Fix: Loading bar now completes on each batch.
+* Fix: Force Clean Trash handles the trash inventory and checks both physical and database leftovers.
+* Update: SiteOrigin parser supports the gallery widget and extracts HTML content.
+* Update: Divi parser handles base64-encoded JSON references.
+
+= 7.2.6 (2026/08/17) =
+* Add: Support for SiteOrigin Page Builder.
+* Add: Auto Buffer helper that sets the advanced buffer value from server tests, with warnings for slow items.
+* Add: Plugin board and AI site analysis to the dashboard.
+* Fix: Query handling and logging for unbounded database queries.
+* Fix: MCP tools were initialised before the plugin load check.
+* Update: Minimum PHP version is now 8.1.
 
 = 7.2.5 (2026/07/25) =
 * Fix: Document size validation no longer stops scans, and the size limit is now configurable.

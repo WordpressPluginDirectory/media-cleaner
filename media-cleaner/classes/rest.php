@@ -8,6 +8,9 @@ class Meow_WPMC_Rest
 	private $namespace = 'media-cleaner/v1';
 	private $shutdown_run_id = 0;
 	private $shutdown_phase = null;
+	// The item a cleanup request was working on. A fatal names it, which is the difference between
+	// "deletion stopped" and "deletion stopped on this media".
+	private $shutdown_item = null;
 	private $shutdown_reserve = null;
 
 	public function __construct( $core, $admin ) {
@@ -36,6 +39,29 @@ class Meow_WPMC_Rest
 				'methods' => 'GET',
 				'permission_callback' => array( $this->core, 'can_access_features' ),
 				'callback' => array( $this, 'rest_all_settings' ),
+			) );
+			// The buffer benchmark is driven by the dashboard: it asks for a plan, runs each
+			// step as its own request so the real cost of a request is part of the measurement,
+			// then sends everything back to be fitted and stored.
+			register_rest_route( $this->namespace, '/auto_buffers/plan', array(
+				'methods' => 'POST',
+				'permission_callback' => array( $this->core, 'can_access_settings' ),
+				'callback' => array( $this, 'rest_auto_buffers_plan' )
+			) );
+			register_rest_route( $this->namespace, '/auto_buffers/measure', array(
+				'methods' => 'POST',
+				'permission_callback' => array( $this->core, 'can_access_settings' ),
+				'callback' => array( $this, 'rest_auto_buffers_measure' )
+			) );
+			register_rest_route( $this->namespace, '/auto_buffers/preview', array(
+				'methods' => 'POST',
+				'permission_callback' => array( $this->core, 'can_access_settings' ),
+				'callback' => array( $this, 'rest_auto_buffers_preview' )
+			) );
+			register_rest_route( $this->namespace, '/auto_buffers/apply', array(
+				'methods' => 'POST',
+				'permission_callback' => array( $this->core, 'can_access_settings' ),
+				'callback' => array( $this, 'rest_auto_buffers_apply' )
 			) );
 
 			// STATS & LISTING
@@ -93,6 +119,11 @@ class Meow_WPMC_Rest
 				'permission_callback' => array( $this->core, 'can_access_features' ),
 				'callback' => array( $this, 'rest_force_clean_trash' )
 			) );
+			register_rest_route( $this->namespace, '/trash_inventory', array(
+				'methods' => 'GET',
+				'permission_callback' => array( $this->core, 'can_access_features' ),
+				'callback' => array( $this, 'rest_trash_inventory' )
+			) );
 			register_rest_route( $this->namespace, '/recover', array(
 				'methods' => 'POST',
 				'permission_callback' => array( $this->core, 'can_access_features' ),
@@ -144,6 +175,14 @@ class Meow_WPMC_Rest
 				'methods' => 'POST',
 				'permission_callback' => array( $this->core, 'can_access_features' ),
 				'callback' => array( $this, 'rest_retrieve_hash_duplicates' )
+			) );
+			register_rest_route( $this->namespace, '/duplicates_group', array(
+				'methods' => 'GET',
+				'permission_callback' => array( $this->core, 'can_access_features' ),
+				'callback' => array( $this, 'rest_duplicates_group' ),
+				'args' => array(
+					'id' => array( 'required' => true ),
+				)
 			) );
 			register_rest_route( $this->namespace, '/check_targets', array(
 				'methods' => 'POST',
@@ -205,6 +244,11 @@ class Meow_WPMC_Rest
 					'permission_callback' => array( $this->core, 'can_access_features' ),
 					'callback' => array( $this, 'rest_run_cancel' )
 				) );
+				register_rest_route( $this->namespace, '/run/unlock_cleanup', array(
+					'methods' => 'POST',
+					'permission_callback' => array( $this->core, 'can_access_features' ),
+					'callback' => array( $this, 'rest_run_unlock_cleanup' )
+				) );
 
 				register_rest_route( $this->namespace, '/trash_preview', array(
 					'methods' => 'GET',
@@ -213,15 +257,25 @@ class Meow_WPMC_Rest
 				) );
 
 			// LOGS
-			register_rest_route( $this->namespace, '/refresh_logs', array(
-				'methods' => 'POST',
-				'permission_callback' => array( $this->core, 'can_access_features' ),
-				'callback' => array( $this, 'rest_refresh_logs' )
-			) );
 			register_rest_route( $this->namespace, '/clear_logs', array(
 				'methods' => 'POST',
 				'permission_callback' => array( $this->core, 'can_access_features' ),
 				'callback' => array( $this, 'rest_clear_logs' )
+			) );
+			register_rest_route( $this->namespace, '/support_bundles', array(
+				'methods' => 'GET',
+				'permission_callback' => array( $this->core, 'can_access_features' ),
+				'callback' => array( $this, 'rest_support_bundles' )
+			) );
+			register_rest_route( $this->namespace, '/delete_support_bundle', array(
+				'methods' => 'POST',
+				'permission_callback' => array( $this->core, 'can_access_features' ),
+				'callback' => array( $this, 'rest_delete_support_bundle' )
+			) );
+			register_rest_route( $this->namespace, '/tail_logs', array(
+				'methods' => 'GET',
+				'permission_callback' => array( $this->core, 'can_access_features' ),
+				'callback' => array( $this, 'rest_tail_logs' )
 			) );
 			register_rest_route( $this->namespace, '/export', array(
 				'methods' => 'GET',
@@ -284,14 +338,29 @@ class Meow_WPMC_Rest
 	}
 
 	public function capture_fatal_shutdown() {
+		// Freed first, so what follows has room to run: this handler exists for the request that
+		// died of memory exhaustion, and it is no use if it dies of the same thing.
 		$this->shutdown_reserve = null;
-		if ( $this->shutdown_run_id < 1 || !$this->core->runs ) return;
 		$error = error_get_last();
 		$fatal_types = array( E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR );
 		if ( !$error || !in_array( $error['type'], $fatal_types, true ) ) return;
+		$message = isset( $error['message'] ) ? $error['message'] : __( 'The PHP worker stopped unexpectedly.', 'media-cleaner' );
+
+		// A fatal returns no response, so error_response() never runs and nothing records what
+		// happened: the request simply stops. Cleanup used to end there with no error, no Support
+		// ID and a log that just stopped mid-step. This is the only chance to leave something
+		// readable behind, so it happens for every request, run or not.
+		$this->core->log( sprintf( '🚫 The PHP worker stopped: %s', $message ) );
+		$this->core->create_support_bundle( $message, array(
+			'Code' => 'wpmc_fatal_error',
+			'Phase' => $this->shutdown_phase,
+			'Item' => $this->shutdown_item,
+			'File' => isset( $error['file'] ) ? $error['file'] . ':' . (int) $error['line'] : null,
+		) );
+
+		if ( $this->shutdown_run_id < 1 || !$this->core->runs ) return;
 		$run = $this->core->runs->get( $this->shutdown_run_id );
 		if ( !$run || !in_array( $run->status, array( 'running', 'paused' ), true ) ) return;
-		$message = isset( $error['message'] ) ? $error['message'] : __( 'The PHP worker stopped unexpectedly.', 'media-cleaner' );
 		$details = array(
 			'phase' => $this->shutdown_phase,
 			'file' => isset( $error['file'] ) ? $error['file'] : null,
@@ -343,14 +412,28 @@ class Meow_WPMC_Rest
 			: max( 0, (int) $transient['retry_after_ms'] );
 		$retryable_commit = in_array( $commit_state, array( 'not_committed', 'safe_to_retry' ), true );
 		$retryable_status = in_array( $status, array( 408, 429, 502, 503, 504 ), true );
+		$retryable = $retryable_commit && ( $retryable_status || !empty( $transient['retryable'] ) );
+		// Only a failure the user actually sees earns a bundle. A scan yields on its time budget
+		// dozens of times in a normal run, and each one comes through here as a retryable error;
+		// snapshotting those would bury the one failure that matters under its own retries.
+		$request_id = null;
+		if ( !$retryable ) {
+			$request_id = $this->core->create_support_bundle( $message, array(
+				'Code' => $code,
+				'Phase' => $phase,
+				'Run' => $run_id ? (string) $run_id : null,
+				'HTTP status' => (string) $status,
+				'Commit state' => $commit_state,
+			) );
+		}
 		$response = new WP_REST_Response( array(
 			'success' => false,
 			'error' => array(
-				'request_id' => wp_generate_uuid4(),
+				'request_id' => $request_id,
 				'run_id' => (int) $run_id,
 				'phase' => $phase,
 				'code' => $code,
-				'retryable' => $retryable_commit && ( $retryable_status || !empty( $transient['retryable'] ) ),
+				'retryable' => $retryable,
 				'retry_after_ms' => $retry_after_ms,
 				'commit_state' => $commit_state,
 				'message' => $message,
@@ -543,6 +626,17 @@ class Meow_WPMC_Rest
 		return new WP_REST_Response( array( 'success' => true, 'data' => array( 'run' => $this->core->runs->to_array( $this->core->runs->get( $run_id ) ) ) ), 200 );
 	}
 
+	function rest_run_unlock_cleanup() {
+		$result = $this->core->runs->force_cleanup_allowed();
+		if ( is_wp_error( $result ) ) {
+			return $this->error_response( $result );
+		}
+		return new WP_REST_Response( array( 'success' => true, 'data' => array(
+			'cleanup_allowed' => $this->core->runs->cleanup_allowed(),
+			'cleanup_status' => $this->core->runs->cleanup_status(),
+		) ), 200 );
+	}
+
 	function rest_preflight() {
 		$checks = array();
 		$blocked = false;
@@ -645,7 +739,19 @@ class Meow_WPMC_Rest
 					'cleanup_buffer' => $severely_constrained ? 5 : ( $profile_constrained ? 10 : 20 ),
 					'base_delay_ms' => $base_delay_ms,
 					'max_retries' => 4,
-					'request_timeout_ms' => max( 30000, min( 90000, (int) ceil( ( $request_budget + 15 ) * 1000 ) ) ),
+					// The work budget is soft: it is only read between parsers, so one slow third-party
+					// parser overruns it by a minute and the batch still ends in an orderly, resumable
+					// timeout. Deriving the client's patience from that budget made it hang up first,
+					// which turns a recoverable batch into a dead UI while the worker keeps running and
+					// writing. Wait for the server's own ceiling instead.
+					'request_timeout_ms' => max( 60000, min( 120000, $this->core->get_max_execution_time() * 1000 ) ),
+					// Cleanup gets its own, longer patience. A scan batch is many small items and can
+					// always hand back early; a delete is one call into wp_delete_attachment, which
+					// runs every hook the site has on it and cannot be interrupted part way. When
+					// that outlives the browser, each attempt is abandoned mid-flight even though the
+					// server completed the item — and the retry budget is spent on work that
+					// succeeded, until the operation gives up on itself.
+					'cleanup_timeout_ms' => max( 120000, min( 300000, $this->core->get_max_execution_time() * 1000 ) ),
 				),
 				'cleanup_allowed' => $this->core->runs->cleanup_allowed(),
 			),
@@ -722,6 +828,13 @@ class Meow_WPMC_Rest
 		else if ( $src === 'medias' ) {
 			$num = $this->engine->count_media_entries( $this->core->get_option( 'attach_is_use' ) );
 		}
+		else if ( $src === 'references' ) {
+			global $wpdb;
+			$num = (int) $wpdb->get_var( $wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->prefix}mclean_refs WHERE run_id = %d AND mediaUrl IS NOT NULL",
+				$this->core->get_run_id()
+			) );
+		}
 		else {
 			return $this->fail_run_response( new WP_Error(
 				'wpmc_count_source_invalid',
@@ -741,14 +854,28 @@ class Meow_WPMC_Rest
 		$limit = isset( $params['limit'] ) ? absint( $params['limit'] ) : 100;
 		$limit = max( 1, min( 100, $limit ) );
 		$ids = [];
+		// The progress bar needs the size of the whole selection, so it is counted
+		// on the first page only: later pages see a set already shrunk by whatever
+		// was processed, and would make the bar go backwards.
+		$total = null;
+		$first_page = ( $cursor === 0 );
 		if ( $src === 'issues' ) {
 			$ids = $repair_mode ? $this->core->get_repair_ids( $search, $cursor, $limit ) : $this->get_issues_ids( $search, $cursor, $limit );
+			if ( $first_page ) {
+				$total = $repair_mode ? (int) $this->core->get_count_of_issues_to_repair( $search ) : $this->count_issues( $search );
+			}
 		}
 		else if ( $src === 'ignored' ) {
 			$ids = $this->get_ignored_ids( $search, $cursor, $limit );
+			if ( $first_page ) {
+				$total = $this->count_ignored( $search );
+			}
 		}
 		else if ( $src === 'trash' ) {
 			$ids = $this->get_trash_ids( $search, $cursor, $limit );
+			if ( $first_page ) {
+				$total = $this->count_trash( $search );
+			}
 		}
 		else {
 			return $this->error_response( new WP_Error(
@@ -764,6 +891,7 @@ class Meow_WPMC_Rest
 			'pagination' => array(
 				'cursor' => $next_cursor,
 				'finished' => count( $ids ) < $limit,
+				'total' => $total,
 			),
 		), 200 );
 	}
@@ -806,6 +934,8 @@ class Meow_WPMC_Rest
 		$limit = isset( $params['limit'] ) ? max( 0, (int) $params['limit'] ) : 0;
 		$source = isset( $params['source'] ) ? $params['source'] : null;
 		$post_id = isset( $params['postId'] ) ? $params['postId'] : null;
+		global $wpdb;
+		$started_queries = $wpdb->num_queries;
 		$limitsize = $this->core->get_option( 'posts_buffer' );
 		$finished = false;
 		$processed = 0;
@@ -835,12 +965,27 @@ class Meow_WPMC_Rest
 		} else if( $source === 'thumbnails' ) {
 			$finished = $this->engine->extractRefsFromThumbnails( $limit, $limitsize, $message, $post_id, $processed );
 		}
+		else if ( $source === 'translations' ) {
+			// posts_buffer is sized for parsing a post, which is orders of magnitude dearer than
+			// looking a URL up. Paging this phase that small would cost hundreds of round trips to
+			// do a few seconds of work.
+			$limitsize = min( 2000, max( 200, 10 * (int) $this->core->get_option( 'analysis_buffer' ) ) );
+			$finished = $this->engine->extractRefsFromTranslations( $limit, $limitsize, $message, $post_id, $processed );
+		}
 		else {
 			return $this->fail_run_response( new WP_Error(
 				'wpmc_reference_source_invalid',
 				__( 'No valid source was provided for reference extraction.', 'media-cleaner' ),
 				array( 'status' => 400 )
 			), $run->id, 'extractReferences' );
+		}
+
+		// One honest line per batch. Every other total the console shows is summed from lines a parser
+		// happened to emit; this is the only place that knows what the batch as a whole cost, and the
+		// query count is what separates "slow PHP" from "hammering the database".
+		if ( $this->core->is_debug() ) {
+			$this->core->log( sprintf( '📊 Batch done: %d items, %d queries.',
+				$processed, max( 0, $wpdb->num_queries - $started_queries ) ) );
 		}
 
 		$this->core->clean_ob();
@@ -1344,8 +1489,173 @@ class Meow_WPMC_Rest
 		return $path !== '' ? $path : null;
 	}
 
-	function rest_refresh_logs() {
-		return new WP_REST_Response( [ 'success' => true, 'data' => $this->core->get_logs() ], 200 );
+	// The live console. log() opens, writes and closes per line, so a line is on disk the moment the
+	// scan produces it -- the file is already the event stream, and a second cheap request can read it
+	// while the scan request that is writing it has not returned yet. That is why this is a byte-offset
+	// tail and not a socket: SSE would hold a PHP-FPM worker open for the whole scan, competing with
+	// the scan itself for the very workers it needs.
+	function rest_tail_logs( $request ) {
+		$offset = max( 0, (int) $request->get_param( 'offset' ) );
+		$enabled = (bool) $this->core->is_debug();
+		$path = $this->core->get_logs_path();
+		if ( !$path || !file_exists( $path ) ) {
+			return new WP_REST_Response( array( 'success' => true, 'data' => array(
+				'lines' => array(), 'offset' => 0, 'enabled' => $enabled,
+			) ), 200 );
+		}
+		clearstatcache( true, $path );
+		$size = (int) filesize( $path );
+		// log() rotates at 5MB and clear_logs() unlinks the file, so a file smaller than the caller's
+		// offset is a different file: reading from that offset would land mid-line in new content.
+		if ( $offset > $size ) $offset = 0;
+		// A tail is for watching, not for downloading a backlog. A caller that fell far behind skips
+		// ahead instead of dragging megabytes through a poll that repeats every second.
+		$max_chunk = 128 * 1024;
+		if ( $size - $offset > $max_chunk ) $offset = $size - $max_chunk;
+		$chunk = '';
+		if ( $size > $offset ) {
+			$handle = @fopen( $path, 'rb' );
+			if ( $handle ) {
+				fseek( $handle, $offset );
+				$chunk = (string) fread( $handle, $size - $offset );
+				fclose( $handle );
+			}
+		}
+		// Whole lines only. The scan is writing as we read, so the tail of the chunk is very often half
+		// a line; keeping it would render as garbage and then be shown again with its other half.
+		$last_break = strrpos( $chunk, "\n" );
+		$chunk = $last_break === false ? '' : substr( $chunk, 0, $last_break + 1 );
+		$offset += strlen( $chunk );
+		$events = array();
+		foreach ( explode( "\n", $chunk ) as $line ) {
+			$event = $this->parse_log_line( rtrim( $line ) );
+			if ( $event ) $events[] = $event;
+		}
+		return new WP_REST_Response( array( 'success' => true, 'data' => array(
+			'events' => $events, 'offset' => $offset, 'enabled' => $enabled,
+		) ), 200 );
+	}
+
+	// The log is written for a human to read, and the console has to draw it. Turning one into the
+	// other is parsing either way; doing it here keeps it in the same file as the code that writes
+	// the lines, so a changed message and its reader stay next to each other — and it leaves the
+	// console purely presentational instead of carrying a second copy of the vocabulary in regex.
+	//
+	// 'group' is what ties consecutive events to the parser that produced them, which is what the
+	// console draws as one block.
+	private function parse_log_line( $line ) {
+		if ( $line === '' ) return null;
+		$time = null;
+		if ( preg_match( '/^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}): ?(.*)$/', $line, $m ) ) {
+			$time = $m[1];
+			$line = $m[2];
+		}
+		if ( $line === '' ) return null;
+
+		$event = function ( $kind, $text, $extra = array() ) use ( $time ) {
+			return array_merge( array( 'kind' => $kind, 'time' => $time, 'text' => $text, 'group' => null ), $extra );
+		};
+
+		// A parser starting is what opens a block, so it carries the group every following event
+		// inherits until the next one.
+		if ( preg_match( '/^▶ (\S+) \((\S+)\)$/', $line, $m ) ) {
+			return $event( 'parser', $m[1], array( 'group' => $m[1], 'hook' => $m[2] ) );
+		}
+		if ( preg_match( '/^🐌 (\S+) \((\S+)\) took ([\d.]+)s, (\d+) queries$/', $line, $m ) ) {
+			return $event( 'timing', $m[1], array(
+				'group' => $m[1], 'hook' => $m[2],
+				'ms' => (int) round( (float) $m[3] * 1000 ), 'queries' => (int) $m[4],
+			) );
+		}
+		if ( preg_match( '/^🔍 Processing post ID: (\d+) \| Type: ([^|]*) \| Title: (.*)$/', $line, $m ) ) {
+			return $event( 'post', trim( $m[3] ) !== '' ? trim( $m[3] ) : sprintf( '#%d', $m[1] ), array(
+				'group' => 'post-' . $m[1], 'postId' => (int) $m[1], 'postType' => trim( $m[2] ),
+			) );
+		}
+		if ( preg_match( '/^✓ Completed post ID: (\d+) in ([\d.]+)ms$/', $line, $m ) ) {
+			return $event( 'post-done', sprintf( '#%d', $m[1] ), array(
+				'group' => 'post-' . $m[1], 'postId' => (int) $m[1], 'ms' => (int) round( (float) $m[2] ),
+			) );
+		}
+		if ( preg_match( '/^🗑 (\S+) #(\d+) ?(.*)$/', $line, $m ) ) {
+			return $event( 'cleanup', trim( $m[3] ) !== '' ? trim( $m[3] ) : sprintf( '#%d', $m[2] ), array(
+				'group' => 'cleanup-' . $m[2], 'itemId' => (int) $m[2], 'hook' => $m[1],
+			) );
+		}
+		if ( preg_match( '/^✓ #(\d+) was already done$/', $line, $m ) ) {
+			return $event( 'ok', sprintf( __( '#%d was already done', 'media-cleaner' ), $m[1] ) );
+		}
+		if ( preg_match( '/^✓ Cleaned #(\d+) in ([\d.]+)ms$/', $line, $m ) ) {
+			return $event( 'cleanup-done', sprintf( '#%d', $m[1] ), array(
+				'group' => 'cleanup-' . $m[1], 'itemId' => (int) $m[1], 'ms' => (int) round( (float) $m[2] ),
+			) );
+		}
+		if ( preg_match( '/^📊 Batch done: (\d+) items, (\d+) queries/', $line, $m ) ) {
+			return $event( 'batch', __( 'Batch complete', 'media-cleaner' ), array(
+				'count' => (int) $m[1], 'queries' => (int) $m[2],
+			) );
+		}
+		if ( preg_match( '/^Flushing (?:remaining )?(\d+) references to the database\.\.\.\s*(.*)$/', $line, $m ) ) {
+			// The sample is what the console shows under the post; the count is what it totals.
+			$sample = trim( $m[2] );
+			return $event( 'refs', $sample !== '' ? $sample : __( 'references written', 'media-cleaner' ),
+				array( 'count' => (int) $m[1] ) );
+		}
+		if ( preg_match( '/^🏁 (.*)$/u', $line, $m ) ) {
+			return $event( 'phase', rtrim( $m[1], '.' ) );
+		}
+		if ( strpos( $line, '😵' ) === 0 || strpos( $line, '🚫' ) === 0 ) {
+			return $event( 'error', ltrim( preg_replace( '/^(😵|🚫)/u', '', $line ) ) );
+		}
+		if ( strpos( $line, '→ ' ) === 0 ) {
+			return $event( 'step', substr( $line, strlen( '→ ' ) ) );
+		}
+		if ( strpos( $line, '🍀' ) === 0 ) {
+			return $event( 'detail', ltrim( preg_replace( '/^🍀/u', '', $line ) ) );
+		}
+		if ( strpos( $line, '✅' ) === 0 ) {
+			return $event( 'ok', ltrim( preg_replace( '/^✅/u', '', $line ) ) );
+		}
+		if ( strpos( $line, '＋' ) === 0 ) {
+			return $event( 'ref', ltrim( preg_replace( '/^＋/u', '', $line ) ) );
+		}
+		if ( strpos( $line, '⚠' ) === 0 ) {
+			return $event( 'warn', ltrim( preg_replace( '/^⚠/u', '', $line ) ) );
+		}
+		if ( preg_match( '/unbounded database query/', $line ) ) {
+			return $event( 'warn', $line );
+		}
+		return $event( 'info', $line );
+	}
+
+	// The list carries the bundles themselves: they are bounded by design and the only thing anyone
+	// does with one is read it or copy it, so a second round trip to fetch one would buy nothing.
+	function rest_support_bundles() {
+		global $wpdb;
+		$table = $wpdb->prefix . 'mclean_support';
+		if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ) !== $table ) {
+			return new WP_REST_Response( array( 'success' => true, 'data' => array() ), 200 );
+		}
+		$rows = $wpdb->get_results( "SELECT support_id, created_at, summary, logs FROM $table ORDER BY id DESC LIMIT 20" );
+		return new WP_REST_Response( array( 'success' => true, 'data' => array_map( function ( $row ) {
+			return array(
+				'supportId' => $row->support_id,
+				'createdAt' => $row->created_at,
+				'summary' => $row->summary,
+				'logs' => $row->logs,
+			);
+		}, is_array( $rows ) ? $rows : array() ) ), 200 );
+	}
+
+	function rest_delete_support_bundle( $request ) {
+		global $wpdb;
+		$params = $this->request_json( $request );
+		$support_id = isset( $params['supportId'] ) ? sanitize_text_field( $params['supportId'] ) : '';
+		if ( $support_id === '' ) {
+			return $this->error_response( new WP_Error( 'wpmc_support_id_required', __( 'A support ID is required.', 'media-cleaner' ), array( 'status' => 400 ) ) );
+		}
+		$wpdb->delete( $wpdb->prefix . 'mclean_support', array( 'support_id' => $support_id ), array( '%s' ) );
+		return new WP_REST_Response( array( 'success' => true ), 200 );
 	}
 
 	function rest_clear_logs() {
@@ -1400,6 +1710,67 @@ class Meow_WPMC_Rest
 		}
 	}
 
+	// Buffers only split the work across requests, so the benchmark below can be re-run at will
+	// and never affects what a scan finds.
+	function rest_auto_buffers_plan() {
+		try {
+			$buffers = new Meow_WPMC_Buffers( $this->core );
+			$plan = $buffers->plan();
+			if ( is_wp_error( $plan ) ) return $this->error_response( $plan );
+			return new WP_REST_Response([ 'success' => true, 'plan' => $plan ], 200 );
+		}
+		catch ( Throwable $e ) {
+			return $this->error_response( $e );
+		}
+	}
+
+	function rest_auto_buffers_measure( $request ) {
+		try {
+			$params = $this->request_json( $request );
+			$probe = isset( $params['probe'] ) ? sanitize_key( $params['probe'] ) : '';
+			$items = isset( $params['items'] ) ? (int) $params['items'] : 0;
+			$buffers = new Meow_WPMC_Buffers( $this->core );
+			$result = $buffers->measure( $probe, $items );
+			if ( is_wp_error( $result ) ) return $this->error_response( $result );
+			return new WP_REST_Response([ 'success' => true, 'round' => $result ], 200 );
+		}
+		catch ( Throwable $e ) {
+			return $this->error_response( $e );
+		}
+	}
+
+	// Same calculation as apply(), without storing anything: this is what the modal shows so
+	// the user can see the proposed buffers before deciding.
+	function rest_auto_buffers_preview( $request ) {
+		try {
+			$params = $this->request_json( $request );
+			$rounds = isset( $params['rounds'] ) && is_array( $params['rounds'] ) ? $params['rounds'] : array();
+			$buffers = new Meow_WPMC_Buffers( $this->core );
+			return new WP_REST_Response([ 'success' => true, 'report' => $buffers->recommend( $rounds ) ], 200 );
+		}
+		catch ( Throwable $e ) {
+			return $this->error_response( $e );
+		}
+	}
+
+	function rest_auto_buffers_apply( $request ) {
+		try {
+			$params = $this->request_json( $request );
+			$rounds = isset( $params['rounds'] ) && is_array( $params['rounds'] ) ? $params['rounds'] : array();
+			$buffers = new Meow_WPMC_Buffers( $this->core );
+			$report = $buffers->apply( $rounds );
+			if ( is_wp_error( $report ) ) return $this->error_response( $report );
+			return new WP_REST_Response([
+				'success' => true,
+				'report' => $report,
+				'options' => $this->settings_options_payload()
+			], 200 );
+		}
+		catch ( Throwable $e ) {
+			return $this->error_response( $e );
+		}
+	}
+
 	function rest_reset_options() {
 		$this->core->reset_options();
 		return new WP_REST_Response( [ 'success' => true, 'options' => $this->settings_options_payload() ], 200 );
@@ -1414,11 +1785,9 @@ class Meow_WPMC_Rest
 		}
 		global $wpdb;
 		$table_scan = $wpdb->prefix . 'mclean_scan';
-		$active_run_id = $this->core->runs->get_active_id();
-		$trashed = (int) $wpdb->get_var( $wpdb->prepare(
-			"SELECT COUNT(*) FROM $table_scan WHERE run_id = %d AND deleted = 1",
-			$active_run_id
-		) );
+		// Any trash at all, from any run: resetting the tables would otherwise strand
+		// those files in quarantine with no record left to recover them.
+		$trashed = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table_scan WHERE deleted = 1" );
 		if ( $trashed > 0 ) {
 			return $this->error_response( new WP_Error( 'wpmc_reset_trash_not_empty', __( 'Recover or permanently delete every quarantined item before resetting the database.', 'media-cleaner' ), array( 'status' => 409, 'trash_count' => $trashed ) ) );
 		}
@@ -1624,6 +1993,173 @@ class Meow_WPMC_Rest
 		return new WP_REST_Response( [ 'success' => true, 'data' => $entries, 'total' => $total ], 200 );
 	}
 
+	/**
+	 * Returns every copy of the duplicate group an issue belongs to.
+	 *
+	 * The scan reports each copy on its own row, which is honest but not enough to decide: two
+	 * identical files can both be in use, in two different places. The dashboard needs the whole
+	 * group at once, with where each copy is used, before anything is trashed.
+	 */
+	function rest_duplicates_group( $request ) {
+		global $wpdb;
+		$id = (int) $request->get_param( 'id' );
+		$run_id = $this->core->get_run_id();
+		$table_scan = $wpdb->prefix . 'mclean_scan';
+		$table_refs = $wpdb->prefix . 'mclean_refs';
+
+		$entry = $wpdb->get_row( $wpdb->prepare(
+			"SELECT id, path FROM $table_scan WHERE run_id = %d AND id = %d LIMIT 1",
+			$run_id, $id
+		) );
+		if ( !$entry ) {
+			return $this->error_response( new WP_Error( 'wpmc_issue_not_found',
+				__( 'This item is not part of the current results.', 'media-cleaner' ),
+				array( 'status' => 404 ) ) );
+		}
+
+		// The group is keyed by the content hash the duplicate analysis stored as a reference.
+		$hash = $wpdb->get_var( $wpdb->prepare(
+			"SELECT originType FROM $table_refs
+			WHERE run_id = %d AND mediaUrl_hash = %s AND mediaUrl = %s AND originType LIKE 'HASH:%%'
+			LIMIT 1",
+			$run_id, hash( 'sha256', $entry->path ), $entry->path
+		) );
+		if ( !$hash ) {
+			return $this->error_response( new WP_Error( 'wpmc_duplicate_hash_missing',
+				__( 'This file was not hashed by the current scan, so its copies cannot be compared. Run a Duplicates scan.', 'media-cleaner' ),
+				array( 'status' => 404 ) ) );
+		}
+
+		// Hash references are URL references, so their mediaId column is NULL: the duplicate analysis
+		// stores the media ID in origin. Same read as check_duplicates(), so both agree on the group.
+		$copies = $wpdb->get_results( $wpdb->prepare(
+			"SELECT mediaUrl, MAX(origin) AS mediaId FROM $table_refs
+			WHERE run_id = %d AND originType = %s AND mediaUrl IS NOT NULL
+			GROUP BY mediaUrl
+			ORDER BY mediaUrl ASC",
+			$run_id, $hash
+		) );
+
+		$results = array();
+		foreach ( $copies as $copy ) {
+			$results[] = $this->build_duplicate_copy( (string) $copy->mediaUrl, (int) $copy->mediaId, $run_id );
+		}
+
+		return new WP_REST_Response( array(
+			'success' => true,
+			'data' => array(
+				'hash' => substr( (string) $hash, 5 ),
+				'currentId' => (int) $entry->id,
+				'copies' => $results,
+			),
+		), 200 );
+	}
+
+	// One copy of a duplicate group, described well enough for a human to pick which one stays.
+	private function build_duplicate_copy( $path, $media_id, $run_id ) {
+		global $wpdb;
+		$table_scan = $wpdb->prefix . 'mclean_scan';
+		$table_refs = $wpdb->prefix . 'mclean_refs';
+
+		if ( $media_id < 1 ) {
+			$media_id = (int) $this->core->find_media_id_from_file( $path, false );
+		}
+
+		$filepath = trailingslashit( $this->core->upload_path ) . $path;
+		$exists = file_exists( $filepath );
+
+		$copy = array(
+			'path' => $path,
+			'mediaId' => $media_id > 0 ? $media_id : null,
+			'title' => null,
+			'editUrl' => null,
+			'thumbnailUrl' => null,
+			'imageUrl' => trailingslashit( $this->core->upload_url ) . $path,
+			'size' => $exists ? (int) filesize( $filepath ) : 0,
+			'exists' => $exists,
+			'dimensions' => null,
+			'uploadedAt' => null,
+			'attachedTo' => null,
+			'issueId' => null,
+			'ignored' => false,
+			'deleted' => false,
+			'referenceCount' => 0,
+			'references' => array(),
+		);
+
+		if ( $media_id > 0 ) {
+			$attachment = get_post( $media_id );
+			if ( $attachment ) {
+				$copy['title'] = html_entity_decode( get_the_title( $media_id ) );
+				$copy['editUrl'] = get_edit_post_link( $media_id, 'raw' );
+				$copy['uploadedAt'] = $attachment->post_date;
+				if ( (int) $attachment->post_parent > 0 ) {
+					$copy['attachedTo'] = array(
+						'id' => (int) $attachment->post_parent,
+						'title' => html_entity_decode( get_the_title( $attachment->post_parent ) ),
+						'editUrl' => get_edit_post_link( $attachment->post_parent, 'raw' ),
+					);
+				}
+			}
+			$src = wp_get_attachment_image_src( $media_id, 'medium' );
+			if ( !empty( $src ) ) {
+				$copy['thumbnailUrl'] = $src[0];
+			}
+			$meta = wp_get_attachment_metadata( $media_id );
+			if ( is_array( $meta ) && !empty( $meta['width'] ) && !empty( $meta['height'] ) ) {
+				$copy['dimensions'] = (int) $meta['width'] . ' × ' . (int) $meta['height'];
+			}
+		}
+		if ( empty( $copy['thumbnailUrl'] ) ) {
+			$ext = pathinfo( $path, PATHINFO_EXTENSION );
+			$copy['thumbnailUrl'] = $this->core->is_image_extension( $ext ) ? $copy['imageUrl'] : null;
+		}
+		if ( empty( $copy['title'] ) ) {
+			$copy['title'] = basename( $path );
+		}
+
+		// The issue row, when this copy is one of the current results. Without it the modal can
+		// only show the copy, not act on it.
+		$issue = $wpdb->get_row( $wpdb->prepare(
+			"SELECT id, ignored, deleted FROM $table_scan
+			WHERE run_id = %d AND path_hash = %s AND path = %s
+			ORDER BY ( issue = 'DUPLICATE' ) DESC, id DESC LIMIT 1",
+			$run_id, hash( 'sha256', $path ), $path
+		) );
+		if ( $issue ) {
+			$copy['issueId'] = (int) $issue->id;
+			$copy['ignored'] = (bool) (int) $issue->ignored;
+			$copy['deleted'] = (bool) (int) $issue->deleted;
+		}
+
+		// Where this copy is used. Same test as the duplicate analysis itself, so the modal can
+		// never disagree with the issue it was opened from.
+		$where = $wpdb->prepare(
+			"FROM $table_refs
+			WHERE run_id = %d AND originType NOT LIKE 'HASH:%%'
+			AND ((%d > 0 AND mediaId = %d) OR (mediaUrl_hash = %s AND mediaUrl = %s))",
+			$run_id, $media_id, $media_id, hash( 'sha256', $path ), $path
+		);
+		$copy['referenceCount'] = (int) $wpdb->get_var( "SELECT COUNT(*) $where" );
+		if ( $copy['referenceCount'] > 0 ) {
+			$references = $wpdb->get_results( "SELECT originType, origin $where ORDER BY id ASC LIMIT 20" );
+			foreach ( $references as $reference ) {
+				$origin = (string) $reference->origin;
+				$post_id = is_numeric( $origin ) ? (int) $origin : 0;
+				$post = $post_id > 0 ? get_post( $post_id ) : null;
+				$copy['references'][] = array(
+					'originType' => stripslashes( (string) $reference->originType ),
+					'origin' => $origin,
+					'postId' => $post ? $post->ID : null,
+					'postTitle' => $post ? html_entity_decode( $post->post_title ) : null,
+					'editUrl' => $post ? get_edit_post_link( $post->ID, 'raw' ) : null,
+				);
+			}
+		}
+
+		return $copy;
+	}
+
 	function rest_entries( $request ) {
 		global $wpdb;
 		$limit = max( 1, min( 100, (int) $request->get_param('limit') ) );
@@ -1656,7 +2192,7 @@ class Meow_WPMC_Rest
 			$filter_sql = isset( $filters[ $filterBy ] ) ? $filters[ $filterBy ] : $filters['all'];
 			$total = $filterBy === 'issues' ? $this->count_issues( $search ) : ( $filterBy === 'ignored' ? $this->count_ignored( $search ) : ( $filterBy === 'trash' ? $this->count_trash( $search ) : 0 ) );
 
-			$allowed_order = array( 'id', 'type', 'postId', 'time', 'path', 'size' );
+			$allowed_order = array( 'id', 'type', 'postId', 'time', 'path', 'size', 'issue' );
 			$order_column = in_array( $orderBy, $allowed_order, true ) ? $orderBy : 'id';
 			$order_direction = $order === 'asc' ? 'ASC' : 'DESC';
 			$search_sql = empty( $search ) ? '' : $wpdb->prepare( 'AND path LIKE %s', '%' . $wpdb->esc_like( $search ) . '%' );
@@ -1725,7 +2261,68 @@ class Meow_WPMC_Rest
 			}
 		}
 
+		$this->attach_duplicate_counts( $entries, $run_id );
+
 		return new WP_REST_Response( [ 'success' => true, 'data' => $entries, 'total' => $total ], 200 );
+	}
+
+	/**
+	 * Tells each duplicate row how many copies it shares its content with, in two queries for the
+	 * whole page. A duplicate on its own line means nothing; the size of its group is the first
+	 * thing the user needs to see.
+	 */
+	private function attach_duplicate_counts( $entries, $run_id ) {
+		global $wpdb;
+		$paths = array();
+		foreach ( $entries as $entry ) {
+			if ( isset( $entry->issue ) && $entry->issue === 'DUPLICATE' ) {
+				$paths[ $entry->path ] = true;
+			}
+		}
+		if ( empty( $paths ) ) {
+			return;
+		}
+
+		$table_refs = $wpdb->prefix . 'mclean_refs';
+		$paths = array_keys( $paths );
+		$hash_placeholders = implode( ', ', array_fill( 0, count( $paths ), '%s' ) );
+		$path_hashes = array_map( function( $path ) { return hash( 'sha256', $path ); }, $paths );
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT mediaUrl, originType FROM $table_refs
+			WHERE run_id = %d AND originType LIKE 'HASH:%%' AND mediaUrl_hash IN ( $hash_placeholders )",
+			array_merge( array( $run_id ), $path_hashes )
+		) );
+
+		$hash_by_path = array();
+		$hashes = array();
+		foreach ( $rows as $row ) {
+			$hash_by_path[ $row->mediaUrl ] = $row->originType;
+			$hashes[ $row->originType ] = true;
+		}
+		if ( empty( $hashes ) ) {
+			return;
+		}
+
+		$hashes = array_keys( $hashes );
+		$origin_placeholders = implode( ', ', array_fill( 0, count( $hashes ), '%s' ) );
+		$counts = $wpdb->get_results( $wpdb->prepare(
+			"SELECT originType, COUNT(DISTINCT mediaUrl) AS copies FROM $table_refs
+			WHERE run_id = %d AND originType IN ( $origin_placeholders )
+			GROUP BY originType",
+			array_merge( array( $run_id ), $hashes )
+		) );
+		$copies_by_hash = array();
+		foreach ( $counts as $count ) {
+			$copies_by_hash[ $count->originType ] = (int) $count->copies;
+		}
+
+		foreach ( $entries as $entry ) {
+			if ( !isset( $entry->issue ) || $entry->issue !== 'DUPLICATE' ) {
+				continue;
+			}
+			$hash = isset( $hash_by_path[ $entry->path ] ) ? $hash_by_path[ $entry->path ] : null;
+			$entry->duplicates_count = $hash && isset( $copies_by_hash[ $hash ] ) ? $copies_by_hash[ $hash ] : 0;
+		}
 	}
 
 	// Nothing here waits for a scan. Only trashing something new does, and delete()
@@ -1748,6 +2345,13 @@ class Meow_WPMC_Rest
 		$attempted = 0;
 		$yielded = false;
 		$this->core->timeout_check_start( count( $ids ) );
+		global $wpdb;
+		$started_queries = $wpdb->num_queries;
+		// Cleanup used to be silent. A batch that never came back left nothing behind to read —
+		// no response, so no support bundle either — and the only way to see where the time went
+		// was to guess.
+		$this->core->log( sprintf( '🏁 Cleanup: %s, %d items', $operation, count( $ids ) ) );
+		$this->shutdown_phase = 'cleanup_' . sanitize_key( $operation );
 
 		foreach ( $ids as $index => $id ) {
 			if ( $index > 0 && $this->core->timeout_should_yield() ) {
@@ -1763,6 +2367,7 @@ class Meow_WPMC_Rest
 				continue;
 			}
 			if ( $journal->state === 'complete' ) {
+				$this->core->log( sprintf( '✓ #%d was already done', $id ) );
 				$results[] = array( 'id' => $id, 'success' => true, 'idempotent' => true );
 				$succeeded++;
 				continue;
@@ -1787,7 +2392,9 @@ class Meow_WPMC_Rest
 			$requires_identity = in_array( $operation, array( 'delete', 'recover', 'repair' ), true );
 			if ( $requires_identity && empty( $manifest['identity_validated'] ) ) {
 				$issue = isset( $issue ) && $issue ? $issue : $this->core->get_issue( $id );
-				$identity = $issue ? $this->core->validate_issue_manifest( $issue ) : new WP_Error( 'wpmc_issue_missing', __( 'The selected Media Cleaner result no longer exists.', 'media-cleaner' ) );
+				$identity = $issue ? $this->core->timed( 'validate_issue_manifest', function () use ( $issue ) {
+					return $this->core->validate_issue_manifest( $issue );
+				} ) : new WP_Error( 'wpmc_issue_missing', __( 'The selected Media Cleaner result no longer exists.', 'media-cleaner' ) );
 				if ( is_wp_error( $identity ) ) {
 					$this->core->runs->update_operation( $journal->id, 'failed', $manifest, $identity );
 					$results[] = array( 'id' => $id, 'success' => false, 'code' => $identity->get_error_code(), 'message' => $identity->get_error_message() );
@@ -1802,7 +2409,14 @@ class Meow_WPMC_Rest
 				continue;
 			}
 			try {
+				$item_started = microtime( true );
+				$issue = $issue ? $issue : $this->core->get_issue( $id );
+				$label = $issue && !empty( $issue->path ) ? $issue->path : '';
+				$this->core->log( sprintf( '🗑 %s #%d %s', $operation, $id, $label ) );
+				$this->shutdown_item = sprintf( '#%d %s', $id, $label );
 				$result = in_array( $operation, array( 'delete', 'recover' ), true ) ? call_user_func( $callback, $id, $manifest ) : call_user_func( $callback, $id );
+				$this->core->log( sprintf( '✓ Cleaned #%d in %.0fms', $id, ( microtime( true ) - $item_started ) * 1000 ) );
+				$this->shutdown_item = null;
 				if ( is_wp_error( $result ) || $result !== true ) {
 					$error = is_wp_error( $result ) ? $result : new WP_Error( 'wpmc_operation_failed', __( 'The item could not be updated.', 'media-cleaner' ) );
 					$this->core->runs->update_operation( $journal->id, 'failed', null, $error );
@@ -1826,6 +2440,13 @@ class Meow_WPMC_Rest
 				$results[] = array( 'id' => $id, 'success' => false, 'code' => $error->get_error_code(), 'message' => $error->get_error_message() );
 				$failed++;
 			}
+		}
+
+		$this->core->log( sprintf( '📊 Batch done: %d items, %d queries.',
+			$attempted, max( 0, $wpdb->num_queries - $started_queries ) ) );
+		if ( $yielded ) {
+			$this->core->log( sprintf( '🍀 Yielded with %d of %d items left for the next request.',
+				max( 0, count( $ids ) - $attempted ), count( $ids ) ) );
 		}
 
 		$response = array(
@@ -1872,23 +2493,53 @@ class Meow_WPMC_Rest
 		), 200 );
 	}
 
-	// A last resort for stuck trash rows whose file has vanished, changed, or become
-	// unsafe since the scan, so the normal Empty Trash refuses them. It removes only
-	// those broken rows (and any file left in quarantine); healthy, still recoverable
-	// trash is left untouched. Emptying the trash needs no scan.
-	function rest_force_clean_trash() {
-		$deleted = $this->core->force_clean_trash();
-		if ( is_wp_error( $deleted ) ) return $this->error_response( $deleted );
+	// What the trash holds, so the cleanup screen can show it before anything is
+	// removed, and again afterwards. Reading it needs no scan and changes nothing.
+	function rest_trash_inventory() {
+		$inventory = $this->core->trash_inventory();
+		if ( is_wp_error( $inventory ) ) return $this->error_response( $inventory );
+		return new WP_REST_Response( array( 'success' => true, 'data' => $inventory ), 200 );
+	}
+
+	// A last resort for trash rows that can no longer be emptied the normal way: their
+	// files are gone from quarantine, or can no longer be verified. It removes only
+	// those; healthy, still recoverable trash is left untouched. Emptying the trash
+	// needs no scan. Bounded per request — the caller loops on the returned cursor.
+	function rest_force_clean_trash( $request ) {
+		$params = $this->request_json( $request );
+		$cursor = isset( $params['cursor'] ) ? (int) $params['cursor'] : 0;
+		$result = $this->core->force_clean_trash( $cursor );
+		if ( is_wp_error( $result ) ) return $this->error_response( $result );
+		$rows = (int) $result['rows'];
+		$files = (int) $result['files'];
+		$messages = array();
+		if ( $rows > 0 ) {
+			$messages[] = sprintf(
+				/* translators: %d is the number of stuck trash items that were removed. */
+				_n( '%d stuck trash item was removed.', '%d stuck trash items were removed.', $rows, 'media-cleaner' ),
+				$rows
+			);
+		}
+		if ( $files > 0 ) {
+			$messages[] = sprintf(
+				/* translators: %d is the number of files that were left in the trash directory without any record. */
+				_n( '%d leftover file was removed from the trash directory.', '%d leftover files were removed from the trash directory.', $files, 'media-cleaner' ),
+				$files
+			);
+		}
+		if ( empty( $messages ) ) {
+			$messages[] = __( 'No stuck trash items were found. Your trash is already clean.', 'media-cleaner' );
+		}
 		return new WP_REST_Response( array(
 			'success' => true,
-			'data' => array( 'deleted' => $deleted ),
-			'message' => $deleted > 0
-				? sprintf(
-					/* translators: %d is the number of broken trash items that were removed. */
-					_n( '%d stuck trash item was removed.', '%d stuck trash items were removed.', $deleted, 'media-cleaner' ),
-					$deleted
-				)
-				: __( 'No stuck trash items were found. Your trash is already clean.', 'media-cleaner' ),
+			'data' => array(
+				'deleted' => $rows,
+				'examined' => (int) $result['examined'],
+				'files' => $files,
+				'cursor' => (int) $result['cursor'],
+				'finished' => (bool) $result['finished'],
+			),
+			'message' => implode( ' ', $messages ),
 		), 200 );
 	}
 
